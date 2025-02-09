@@ -1,3 +1,4 @@
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import time
@@ -6,6 +7,8 @@ from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
 from nuplan.planning.utils.multithreading.worker_parallel import SingleMachineParallelExecutor
 from nuplan.common.actor_state.state_representation import Point2D
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
+
+import utils
 
 # ==============================
 # 1️⃣ CONFIGURATION - Set Paths
@@ -49,43 +52,6 @@ scenario = scenarios[0]  # Select the first scenario
 # 4️⃣ EXTRACT MAP FEATURES
 # ==============================
 map_api = scenario.map_api
-
-# Function to extract proximal map objects
-def get_proximal_map_objects(layer, radius=50.0, ego_box=None):
-    return map_api.get_proximal_map_objects(Point2D(ego_box.center.x, ego_box.center.y), radius, [layer])[layer]
-
-def get_lane_centerlines(ego_box):
-    lanes = get_proximal_map_objects(SemanticMapLayer.LANE, ego_box=ego_box)
-    lane_dict = {lane.id: np.array([[pt.x, pt.y] for pt in lane.baseline_path.discrete_path]) for lane in lanes}
-    # print(f"Lane IDs: {list(lane_dict.keys())}")
-    return lane_dict
-
-def get_lane_connectors(ego_box):
-    lane_connectors = get_proximal_map_objects(SemanticMapLayer.LANE_CONNECTOR, ego_box=ego_box)
-    lane_connector_dict = {connector.id: np.array([[pt.x, pt.y] for pt in connector.baseline_path.discrete_path]) for connector in lane_connectors}
-    # print(f"Lane Connector IDs: {list(lane_connector_dict.keys())}")
-    return lane_connector_dict
-
-# Function to extract roadblocks
-def get_roadblocks(ego_box):
-    roadblocks = get_proximal_map_objects(SemanticMapLayer.ROADBLOCK, ego_box=ego_box)
-    return [np.array(list(roadblock.polygon.exterior.coords)) for roadblock in roadblocks]
-
-# Function to extract roadblock connectors
-def get_roadblock_connectors(ego_box):
-    roadblock_connectors = get_proximal_map_objects(SemanticMapLayer.ROADBLOCK_CONNECTOR, ego_box=ego_box)
-    return [np.array(list(connector.polygon.exterior.coords)) for connector in roadblock_connectors]
-
-# Function to extract nearby objects
-def get_nearby_objects(scenario, iteration):
-    tracked_objects = scenario.get_tracked_objects_at_iteration(iteration)
-    return [obj.box for obj in tracked_objects.tracked_objects]
-
-def get_traffic_light_status(scenario, iteration):
-    traffic_light_statuses = scenario.get_traffic_light_status_at_iteration(iteration)
-    traffic_lights = {tl.lane_connector_id: tl.status.name for tl in traffic_light_statuses}
-    print(f"Traffic Light Statuses: {traffic_lights}")
-    return traffic_lights
 
 def plot_map_features(ax, lane_coords, lane_connector_coords, roadblock_coords, roadblock_connector_coords, nearby_objects, ego_box, traffic_lights):
     ax.clear()
@@ -146,15 +112,16 @@ for i in range(num_ticks):
     ego_state = scenario.get_ego_state_at_iteration(iteration)
     ego_box = ego_state.car_footprint.oriented_box
     
-    lane_centerlines = get_lane_centerlines(ego_box)
-    lane_connectors = get_lane_connectors(ego_box)
-    roadblocks = get_roadblocks(ego_box)
-    roadblock_connectors = get_roadblock_connectors(ego_box)
-    nearby_objects = get_nearby_objects(scenario, iteration)
-    traffic_lights = get_traffic_light_status(scenario, iteration)
+    lane_centerlines = utils.get_lane_centerlines(ego_box, map_api)
+    lane_connectors = utils.get_lane_connectors(ego_box, map_api)
+    roadblocks = utils.get_roadblocks(ego_box, map_api)
+    roadblock_connectors = utils.get_roadblock_connectors(ego_box, map_api)
+    nearby_objects = utils.get_nearby_objects(scenario, iteration)
+    traffic_lights = utils.get_traffic_light_status(scenario, iteration)
 
     plot_map_features(ax, lane_centerlines, lane_connectors, roadblocks, roadblock_connectors, nearby_objects, ego_box, traffic_lights)
     time.sleep(0.1)
+    utils.generate_roadmap(scenario, iteration)
 
 plt.show()
 
