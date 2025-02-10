@@ -1,7 +1,7 @@
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import time
+import random
+import os
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
 from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
 from nuplan.planning.utils.multithreading.worker_parallel import SingleMachineParallelExecutor
@@ -102,13 +102,14 @@ def plot_map_features(ax, lane_coords, lane_connector_coords, roadblock_coords, 
 # ==============================
 # 4️⃣ PLAY 5 CONSECUTIVE TICKS
 # ==============================
-start_iteration = 0  # Define starting iteration
+start_iteration = 25  # Define starting iteration
 num_ticks = 200  # Number of consecutive ticks
 fig, ax = plt.subplots(figsize=(10, 8))
 
-for i in range(num_ticks):
+lane_id_to_geometry = utils.reason_route_intent(scenario)
+
+for iteration in range(start_iteration, scenario.get_number_of_iterations()):
     print("====== new tick =======")
-    iteration = start_iteration + i
     ego_state = scenario.get_ego_state_at_iteration(iteration)
     ego_box = ego_state.car_footprint.oriented_box
     
@@ -119,11 +120,36 @@ for i in range(num_ticks):
     nearby_objects = utils.get_nearby_objects(scenario, iteration)
     traffic_lights = utils.get_traffic_light_status(scenario, iteration)
 
-    plot_map_features(ax, lane_centerlines, lane_connectors, roadblocks, roadblock_connectors, nearby_objects, ego_box, traffic_lights)
-    time.sleep(0.1)
-    utils.generate_roadmap(scenario, iteration)
+    # plot_map_features(ax, lane_centerlines, lane_connectors, roadblocks, roadblock_connectors, nearby_objects, ego_box, traffic_lights)
+    # time.sleep(0.1)
 
-plt.show()
+    curr_folder = "images/timestamp_" + str(iteration).zfill(6) + "/"
+    os.makedirs(curr_folder, exist_ok=True)
+
+    angle_noise = random.uniform(-25, 25)
+    image_size = 400
+    image_resolution = 0.2
+    # single tick
+    utils.generate_ego_box(scenario, iteration, image_size, image_resolution, curr_folder, angle_noise)
+    # single tick
+    utils.generate_roadmap(scenario, iteration, image_size, image_resolution, curr_folder, angle_noise)
+    # single tick
+    utils.generate_intent_map(scenario, iteration, lane_id_to_geometry, image_size, image_resolution, curr_folder, angle_noise)
+    # single tick
+    utils.generate_speed_limit_map(scenario, iteration, image_size, image_resolution, curr_folder, angle_noise)
+
+    # multiple ticks
+    utils.generate_past_ego_poses(scenario, iteration, image_size, image_resolution, curr_folder, angle_noise)
+    # multiple ticks
+    utils.generate_traffic_lights_map(scenario, iteration, 1., image_size, image_resolution, curr_folder, angle_noise)
+    # multiple ticks
+    utils.generate_past_tracked_objects_map(scenario, iteration, 1., image_size, image_resolution, curr_folder, angle_noise)
+
+    ####  labe ###
+    # multiple ticks
+    utils.generate_future_ego_poses(scenario, iteration, image_size, image_resolution, curr_folder, angle_noise)
+    
+# plt.show()
 
     # # Get the mission goal (destination)
     # mission_goal = scenario.get_mission_goal()
