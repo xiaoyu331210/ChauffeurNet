@@ -1,5 +1,8 @@
 import random
 import os
+import cv2
+import numpy as np
+from typing import Dict, List
 
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
 from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
@@ -53,10 +56,10 @@ scenario = scenarios[0]  # Select the first scenario
 start_iteration = 25  # Define starting iteration
 lane_id_to_geometry = utils.reason_route_intent(scenario)
 for iteration in range(start_iteration, scenario.get_number_of_iterations()):
-    print("====== new tick =======")
+    print(f"====== new tick ======= {iteration}")
     curr_folder = "images/timestamp_" + str(iteration).zfill(6) + "/"
     os.makedirs(curr_folder, exist_ok=True)
-    # Create config once per iteration
+    
     config = raster_tile_generator.ImageConfig(
         scenario=scenario,
         iter=iteration,
@@ -65,23 +68,42 @@ for iteration in range(start_iteration, scenario.get_number_of_iterations()):
         save_folder=curr_folder,
         angle_noise=random.uniform(-25., 25.)
     )
-    # single tick
-    raster_tile_generator.generate_ego_box(config)
-    # single tick
-    raster_tile_generator.generate_roadmap(config)
-    # single tick
-    raster_tile_generator.generate_intent_map(config, lane_id_to_geometry)
-    # single tick
-    raster_tile_generator.generate_speed_limit_map(config)
 
-    # multiple ticks
-    raster_tile_generator.generate_past_ego_poses(config)
-    # multiple ticks
-    raster_tile_generator.generate_traffic_lights_map(config)
-    # multiple ticks
-    raster_tile_generator.generate_past_tracked_objects_map(config)
+    # Get all images
+    images: Dict[str, List[np.ndarray]] = {
+        'ego_box': [raster_tile_generator.generate_ego_box(config)],
+        'roadmap': [raster_tile_generator.generate_roadmap(config)],
+        'intent': [raster_tile_generator.generate_intent_map(config, lane_id_to_geometry)],
+        'speed_limit': [raster_tile_generator.generate_speed_limit_map(config)],
+        'past_ego': [raster_tile_generator.generate_past_ego_poses(config)],
+        'traffic_lights': raster_tile_generator.generate_traffic_lights_map(config),
+        'tracked_objects': raster_tile_generator.generate_past_tracked_objects_map(config),
+        'future_ego': [raster_tile_generator.generate_future_ego_poses(config)]
+    }
 
-    ####  labe ###
-    # multiple ticks
-    raster_tile_generator.generate_future_ego_poses(config)
+    # Save individual images
+    for name, img_list in images.items():
+        for i, img in enumerate(img_list):
+            config.save_image(img, f"{name}_{i:03d}.png")
+
+    # Create list to hold all channels
+    channels = []
+    
+    # Collect all channels from all images and all frames
+    for name, img_list in images.items():
+        if name == "future_ego":
+            continue
+        for img in img_list:
+            # If image is 3-channel, split it into separate channels
+            if len(img.shape) == 3 and img.shape[2] == 3:
+                channels.extend([img[:,:,i] for i in range(3)])
+            else:
+                # If image is single channel, add it directly
+                channels.append(img.squeeze())
+    
+    # Stack all channels into a single multi-channel image
+    stacked_image = np.dstack(channels)
+    
+    # Save the stacked image with compression
+    np.savez_compressed(os.path.join(curr_folder, "stacked.npz"), stacked_image)
 

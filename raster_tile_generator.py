@@ -50,15 +50,15 @@ class ImageConfig:
                  (self.image_size - (y - self.min_y) / self.resolution)]
                 for x, y in points
             ], dtype=np.int32)
-    
+
+    def rotate_image(self, image: np.ndarray) -> np.ndarray:
+        """Rotate the image with rotation matrix"""
+        return cv2.warpAffine(image, self.rotation_matrix, (self.image_size, self.image_size))
+
     def save_image(self, image: np.ndarray, filename: str) -> None:
         """Save the image with rotation applied"""
-        rotated = cv2.warpAffine(image, self.rotation_matrix, (self.image_size, self.image_size))
         save_path = self.save_folder + filename
-        cv2.imwrite(save_path, rotated)
-        print(f"Image saved to {save_path}")
-
-
+        cv2.imwrite(save_path, image)
 
 def generate_past_ego_poses(config: ImageConfig):
     image = config.create_image(1)
@@ -76,8 +76,7 @@ def generate_past_ego_poses(config: ImageConfig):
         polygon = config.world_to_image_coords(past_pose)
 
         cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
-    
-    config.save_image(image, "/past_ego_trajectory.png")
+    return config.rotate_image(image)
 
 def generate_future_ego_poses(config: ImageConfig):
     image = config.create_image(1)
@@ -96,25 +95,22 @@ def generate_future_ego_poses(config: ImageConfig):
 
         cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
     
-    config.save_image(image, "/future_ego_trajectory.png")
+    return config.rotate_image(image)
 
 def generate_ego_box(config: ImageConfig):
     ego_polygon = np.array([list(corner) for corner in config.ego_box.geometry.exterior.coords])
     polygon = config.world_to_image_coords(ego_polygon)
     
     image = config.create_image(1)
-    cv2.fillPoly(
-        img=image,
-        pts=[polygon.reshape(-1, 1, 2)],
-        color=255
-    )
+    cv2.fillPoly(img=image, pts=[polygon.reshape(-1, 1, 2)], color=255)
     
-    config.save_image(image, "/ego_box.png")
+    return config.rotate_image(image)
 
 def generate_past_tracked_objects_map(config: ImageConfig, past_time_horizon=1.):
     step_size = int(0.2 / config.scenario.database_interval)
     past_iter = int(past_time_horizon / config.scenario.database_interval)
     
+    images = []
     for i in reversed(range(0, past_iter + 1, step_size)):
         curr_iter = config.iter - i
         image = config.create_image(1)
@@ -125,7 +121,8 @@ def generate_past_tracked_objects_map(config: ImageConfig, past_time_horizon=1.)
             polygon = config.world_to_image_coords(obj_polygon)
             cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
 
-        config.save_image(image, f"/tracked_objects_-{i:03d}.png")
+        images.append(image)
+    return [config.rotate_image(image) for image in images]
 
 def generate_speed_limit_map(config: ImageConfig):
     image = config.create_image(1)
@@ -137,13 +134,14 @@ def generate_speed_limit_map(config: ImageConfig):
         color_value = 50 if lane.speed_limit_mps is None else min(int(lane.speed_limit_mps), 255)
         cv2.polylines(image, [centerline.reshape(-1, 1, 2)], False, color_value, 2)
     
-    config.save_image(image, "/speed_limit.png")
+    return config.rotate_image(image)
 
 
 def generate_traffic_lights_map(config: ImageConfig, time_horizon=1.):
     step_size = int(0.2 / config.scenario.database_interval)
     past_iter = int(time_horizon / config.scenario.database_interval)
     
+    images = []
     for i in reversed(range(0, past_iter + 1, step_size)):
         curr_iter = config.iter - i
         image = config.create_image(1)
@@ -162,7 +160,8 @@ def generate_traffic_lights_map(config: ImageConfig, time_horizon=1.):
             
             cv2.polylines(image, [centerline.reshape(-1, 1, 2)], False, color, 2)
         
-        config.save_image(image, f"/traffic_lights_-{i:03d}.png")
+        images.append(image)
+    return [config.rotate_image(image) for image in images]
 
 def generate_roadmap(config: ImageConfig):
     image = config.create_image(3)
@@ -193,7 +192,7 @@ def generate_roadmap(config: ImageConfig):
             points = config.world_to_image_coords(polygon)
             cv2.polylines(image, [points.reshape(-1, 1, 2)], True, color, 1)
 
-    config.save_image(image, "/roadmap.png")
+    return config.rotate_image(image)
 
 def generate_intent_map(config: ImageConfig, lane_id_to_geometry):
     image = config.create_image(1)
@@ -202,5 +201,5 @@ def generate_intent_map(config: ImageConfig, lane_id_to_geometry):
         polygon = config.world_to_image_coords(geometry)
         cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
     
-    config.save_image(image, "/intent.png")
+    return config.rotate_image(image)
 

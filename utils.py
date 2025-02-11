@@ -45,7 +45,6 @@ def get_map_object_exterior_polygons(ego_box, map_api, layer):
 def get_traffic_light_status(scenario, iteration):
     traffic_light_statuses = scenario.get_traffic_light_status_at_iteration(iteration)
     traffic_lights = {tl.lane_connector_id: tl.status.name for tl in traffic_light_statuses}
-    print(f"Traffic Light Statuses: {traffic_lights}")
     return traffic_lights
 
 def get_rotation_matrix(ego_state, image_size, angle_noise=0.):
