@@ -1,14 +1,13 @@
-import matplotlib.pyplot as plt
-import numpy as np
 import random
 import os
+
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
 from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
 from nuplan.planning.utils.multithreading.worker_parallel import SingleMachineParallelExecutor
-from nuplan.common.actor_state.state_representation import Point2D
-from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 
 import utils
+import raster_tile_generator
+
 
 # ==============================
 # 1️⃣ CONFIGURATION - Set Paths
@@ -58,7 +57,7 @@ for iteration in range(start_iteration, scenario.get_number_of_iterations()):
     curr_folder = "images/timestamp_" + str(iteration).zfill(6) + "/"
     os.makedirs(curr_folder, exist_ok=True)
     # Create config once per iteration
-    config = utils.ImageConfig(
+    config = raster_tile_generator.ImageConfig(
         scenario=scenario,
         iter=iteration,
         image_size=400,
@@ -67,22 +66,22 @@ for iteration in range(start_iteration, scenario.get_number_of_iterations()):
         angle_noise=random.uniform(-25., 25.)
     )
     # single tick
-    utils.generate_ego_box(config)
+    raster_tile_generator.generate_ego_box(config)
     # single tick
-    utils.generate_roadmap(config)
+    raster_tile_generator.generate_roadmap(config)
     # single tick
-    utils.generate_intent_map(config, lane_id_to_geometry)
+    raster_tile_generator.generate_intent_map(config, lane_id_to_geometry)
     # single tick
-    utils.generate_speed_limit_map(config)
+    raster_tile_generator.generate_speed_limit_map(config)
 
     # multiple ticks
-    utils.generate_past_ego_poses(config)
+    raster_tile_generator.generate_past_ego_poses(config)
     # multiple ticks
-    utils.generate_traffic_lights_map(config)
+    raster_tile_generator.generate_traffic_lights_map(config)
     # multiple ticks
-    utils.generate_past_tracked_objects_map(config)
+    raster_tile_generator.generate_past_tracked_objects_map(config)
 
     ####  labe ###
     # multiple ticks
-    utils.generate_future_ego_poses(config)
+    raster_tile_generator.generate_future_ego_poses(config)
 
