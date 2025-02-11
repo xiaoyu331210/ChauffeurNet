@@ -2,6 +2,8 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import random
+from dataclasses import dataclass
+from typing import Tuple
 
 from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_builder import NuPlanScenarioBuilder
 from nuplan.planning.scenario_builder.scenario_filter import ScenarioFilter
@@ -9,14 +11,71 @@ from nuplan.planning.utils.multithreading.worker_parallel import SingleMachinePa
 from nuplan.common.actor_state.state_representation import Point2D
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 
+@dataclass
+class ImageConfig:
+    """Configuration class for image generation parameters"""
+    scenario: any  # NuPlanScenario
+    iter: int
+    image_size: int = 1024
+    resolution: float = 0.1
+    save_folder: str = "images/"
+    angle_noise: float = 0.0
+    
+    def __post_init__(self):
+        # Get map API and ego state
+        self.map_api = self.scenario.map_api
+        self.ego_state = self.scenario.get_ego_state_at_iteration(self.iter)
+        self.ego_x = self.ego_state.car_footprint.center.x
+        self.ego_y = self.ego_state.car_footprint.center.y
+        self.ego_box = self.ego_state.car_footprint.oriented_box
+        
+        # Calculate image boundaries
+        self.half_size_meters = (self.image_size / 2) * self.resolution
+        self.min_x = self.ego_x - self.half_size_meters
+        self.min_y = self.ego_y - self.half_size_meters
+        
+        # Get rotation matrix
+        self.rotation_matrix = get_rotation_matrix(self.ego_state, self.image_size, self.angle_noise)
+    
+    def create_image(self, channel_num):
+        return np.zeros((self.image_size, self.image_size, channel_num), dtype=np.uint8)
+    
+    def world_to_image_coords(self, points) -> np.ndarray:
+        """Convert world coordinates to image coordinates"""
+        # Handle both Point2D objects and raw coordinates
+        if hasattr(points[0], 'x'):  # If points are Point2D objects
+            return np.array([
+                [(pt.x - self.min_x) / self.resolution, 
+                 (self.image_size - (pt.y - self.min_y) / self.resolution)]
+                for pt in points
+            ], dtype=np.int32)
+        else:  # If points are raw coordinates
+            return np.array([
+                [(x - self.min_x) / self.resolution, 
+                 (self.image_size - (y - self.min_y) / self.resolution)]
+                for x, y in points
+            ], dtype=np.int32)
+    
+    def save_image(self, image: np.ndarray, filename: str) -> None:
+        """Save the image with rotation applied"""
+        rotated = cv2.warpAffine(image, self.rotation_matrix, (self.image_size, self.image_size))
+        save_path = self.save_folder + filename
+        cv2.imwrite(save_path, rotated)
+        print(f"Image saved to {save_path}")
+
+def get_lanes_around_point(ego_box, map_api, radius=50.0):
+    """Get all lanes within a radius of the ego vehicle."""
+    ego_point = Point2D(ego_box.center.x, ego_box.center.y)
+    
+    # Get both regular lanes and lane connectors
+    lanes = map_api.get_proximal_map_objects(ego_point, radius, [SemanticMapLayer.LANE])[SemanticMapLayer.LANE]
+    lane_connectors = map_api.get_proximal_map_objects(ego_point, radius, [SemanticMapLayer.LANE_CONNECTOR])[SemanticMapLayer.LANE_CONNECTOR]
+    
+    return list(lanes) + list(lane_connectors)
+
 # Function to extract proximal map objects
 def get_proximal_map_objects(layer, map_api, radius=50.0, ego_box=None):
     return map_api.get_proximal_map_objects(Point2D(ego_box.center.x, ego_box.center.y), radius, [layer])[layer]
-
-def get_lane_centerlines(ego_box, map_api):
-    lanes = get_proximal_map_objects(SemanticMapLayer.LANE, map_api, ego_box=ego_box)
-    lane_dict = {lane.id: np.array([[pt.x, pt.y] for pt in lane.baseline_path.discrete_path]) for lane in lanes}
-    return lane_dict
 
 def get_lane_left_boundary(ego_box, map_api):
     lanes = get_proximal_map_objects(SemanticMapLayer.LANE, map_api, ego_box=ego_box)
@@ -27,11 +86,6 @@ def get_lane_right_boundary(ego_box, map_api):
     lanes = get_proximal_map_objects(SemanticMapLayer.LANE, map_api, ego_box=ego_box)
     lane_dict = {lane.id: np.array([[pt.x, pt.y] for pt in lane.right_boundary.discrete_path]) for lane in lanes}
     return lane_dict
-
-def get_lane_connectors(ego_box, map_api):
-    lane_connectors = get_proximal_map_objects(SemanticMapLayer.LANE_CONNECTOR, map_api, ego_box=ego_box)
-    lane_connector_dict = {connector.id: np.array([[pt.x, pt.y] for pt in connector.baseline_path.discrete_path]) for connector in lane_connectors}
-    return lane_connector_dict
 
 # Function to extract roadblocks
 def get_roadblocks(ego_box, map_api):
@@ -47,10 +101,6 @@ def get_map_object_exterior_polygons(ego_box, map_api, layer):
     objects = get_proximal_map_objects(layer, map_api, ego_box=ego_box)
     return [np.array(list(object.polygon.exterior.coords)) for object in objects]
 
-# Function to extract nearby objects
-def get_nearby_objects(scenario, iteration):
-    tracked_objects = scenario.get_tracked_objects_at_iteration(iteration)
-    return [obj.box for obj in tracked_objects.tracked_objects]
 
 def get_traffic_light_status(scenario, iteration):
     traffic_light_statuses = scenario.get_traffic_light_status_at_iteration(iteration)
@@ -58,409 +108,146 @@ def get_traffic_light_status(scenario, iteration):
     print(f"Traffic Light Statuses: {traffic_lights}")
     return traffic_lights
 
-def merge_common_boundaries(left_boundaries: dict, right_boundaries: dict) -> dict:
-    """
-    Finds IDs that appear in both left_boundaries and right_boundaries,
-    and returns a dictionary mapping each common ID to a tuple of
-    (left_geometry, right_geometry).
-    """
-    # Find common keys
-    common_ids = set(left_boundaries.keys()).intersection(right_boundaries.keys())
-    
-    # Build output dict
-    merged = {}
-    for boundary_id in common_ids:
-        merged[boundary_id] = left_boundaries[boundary_id]
-    
-    return merged
-
 def get_rotation_matrix(ego_state, image_size, angle_noise=0.):
     ego_heading = -ego_state.car_footprint.center.heading * 180. / 3.14 + 90. + angle_noise
     rotation_center = (image_size / 2, image_size / 2)
     return cv2.getRotationMatrix2D(rotation_center, ego_heading, 1.0)
 
-def generate_past_ego_poses(scenario, iter, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
-    
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
 
-    step_size = int(0.2 / scenario.database_interval)
+def generate_past_ego_poses(config: ImageConfig):
+    image = config.create_image(1)
+
+    past_ego_states = config.scenario.get_ego_past_trajectory(config.iter, time_horizon=8.)
+    step_size = int(0.2 / config.scenario.database_interval)
     assert(4 == step_size)
-    past_ego_states = scenario.get_ego_past_trajectory(iter, time_horizon=8.)
     step_t = -1
+
     for past_ego_state in past_ego_states:
         step_t = (step_t + 1) % step_size
         if 0 != step_t:
             continue
-        past_x, past_y = past_ego_state.car_footprint.center.x, past_ego_state.car_footprint.center.y
-        past_x = (past_x - min_x) / resolution
-        past_y = image_size - (past_y - min_y) / resolution
+        past_pose = np.array([[past_ego_state.car_footprint.center.x, past_ego_state.car_footprint.center.y]])
+        polygon = config.world_to_image_coords(past_pose)
 
-        cv2.circle(image, (int(past_x), int(past_y)), 1, (255, 255, 255), thickness=1)
-
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-
-    # Save the image
-    filename = f"/past_ego_trajectory.png"  # 6-digit zero-padded format
-    save_path = save_folder + filename
-    cv2.imwrite(save_path, image)
-    print(f"ego box saved to {save_path}")
-
-def generate_future_ego_poses(scenario, iter, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
+        cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+    config.save_image(image, "/past_ego_trajectory.png")
 
-    step_size = int(0.2 / scenario.database_interval)
+def generate_future_ego_poses(config: ImageConfig):
+    image = config.create_image(1)
+
+    step_size = int(0.2 / config.scenario.database_interval)
     assert(4 == step_size)
-    future_ego_states = scenario.get_ego_future_trajectory(iter, time_horizon=2.)
+    future_ego_states = config.scenario.get_ego_future_trajectory(config.iter, time_horizon=2.)
     step_t = 0
 
     for future_ego_state in future_ego_states:
         step_t = (step_t + 1) % step_size
         if 0 != step_t:
             continue
-        future_x, future_y = future_ego_state.car_footprint.center.x, future_ego_state.car_footprint.center.y
-        future_x = (future_x - min_x) / resolution
-        future_y = image_size - (future_y - min_y) / resolution
+        future_pose = np.array([[future_ego_state.car_footprint.center.x, future_ego_state.car_footprint.center.y]])
+        polygon = config.world_to_image_coords(future_pose)
 
-        cv2.circle(image, (int(future_x), int(future_y)), 1, (0, 255, 0), thickness=1)
-
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-
-    # Save the image
-    filename = f"/future_ego_trajectory.png"  # 6-digit zero-padded format
-    save_path = save_folder + filename
-    cv2.imwrite(save_path, image)
-    print(f"ego box saved to {save_path}")
-
-def generate_ego_box(scenario, iter, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
+        cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    ego_box = ego_state.car_footprint.oriented_box
+    config.save_image(image, "/future_ego_trajectory.png")
+
+def generate_ego_box(config: ImageConfig):
+    ego_polygon = np.array([list(corner) for corner in config.ego_box.geometry.exterior.coords])
+    polygon = config.world_to_image_coords(ego_polygon)
     
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-
-    ego_polygon = np.array([list(corner) for corner in ego_box.geometry.exterior.coords])
-
-    polygon = np.array([
-        [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-        for x, y in ego_polygon
-    ], dtype=np.int32)
-    polygon = polygon.reshape((-1, 1, 2))
+    image = config.create_image(1)
     cv2.fillPoly(
-        img=image,               # The image to draw on
-        pts=[polygon],    # List of polygons to fill
-        color=(255, 255, 255)         # Fill color
+        img=image,
+        pts=[polygon.reshape(-1, 1, 2)],
+        color=255
     )
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-
-    # Save the image
-    filename = f"/ego_box.png"  # 6-digit zero-padded format
-    save_path = save_folder + filename
-    cv2.imwrite(save_path, image)
-    print(f"ego box saved to {save_path}")
-
-def generate_past_tracked_objects_map(scenario, iter, past_time_horizon=1., image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
+    config.save_image(image, "/ego_box.png")
+
+def generate_past_tracked_objects_map(config: ImageConfig, past_time_horizon=1.):
+    step_size = int(0.2 / config.scenario.database_interval)
+    past_iter = int(past_time_horizon / config.scenario.database_interval)
     
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-
-    step_size = int(0.2 / scenario.database_interval)
-
-    past_iter = int(past_time_horizon / scenario.database_interval)
     for i in reversed(range(0, past_iter + 1, step_size)):
-        curr_iter = iter - i
-        # Create a blank black image
-        image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+        curr_iter = config.iter - i
+        image = config.create_image(1)
 
-        tracked_objects = scenario.get_tracked_objects_at_iteration(curr_iter)
+        tracked_objects = config.scenario.get_tracked_objects_at_iteration(curr_iter)
         for obj in tracked_objects.tracked_objects:
-            obj_box = obj.box
-            obj_polygon = np.array([list(corner) for corner in obj_box.geometry.exterior.coords])
-            polygon = np.array([
-                [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-                for x, y in obj_polygon
-            ], dtype=np.int32)
-            polygon = polygon.reshape((-1, 1, 2))
-            cv2.fillPoly(
-                img=image,               # The image to draw on
-                pts=[polygon],    # List of polygons to fill
-                color=(255, 255, 255)         # Fill color
-            )
-        image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
+            obj_polygon = np.array([list(corner) for corner in obj.box.geometry.exterior.coords])
+            polygon = config.world_to_image_coords(obj_polygon)
+            cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
 
-        # Save the image
-        filename = f"/tracked_objects_-{i:03d}.png"  # 6-digit zero-padded format
-        save_path = save_folder + filename
-        cv2.imwrite(save_path, image)
-        print(f"tracked objects saved to {save_path}")
+        config.save_image(image, f"/tracked_objects_-{i:03d}.png")
 
-
-def generate_speed_limit_map(scenario, iter, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
+def generate_speed_limit_map(config: ImageConfig):
+    image = config.create_image(1)
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    ego_box = ego_state.car_footprint.oriented_box
-    
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-
-    # Create a blank black image
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-
-    # plog lane
-    lanes = get_proximal_map_objects(SemanticMapLayer.LANE, map_api, ego_box=ego_box)
-    lane_connectors = get_proximal_map_objects(SemanticMapLayer.LANE_CONNECTOR, map_api, ego_box=ego_box)
-    lanes.extend(lane_connectors)
-
+    lanes = get_lanes_around_point(config.ego_box, config.map_api)
     for lane in lanes:
-        lane_line = np.array([[pt.x, pt.y] for pt in lane.baseline_path.discrete_path])
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in lane_line
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        speed_limit_mps = 50 if lane.speed_limit_mps is None else lane.speed_limit_mps
-        color = (speed_limit_mps, speed_limit_mps, speed_limit_mps)
-        cv2.polylines(image, [points], isClosed=False, color=color, thickness=2)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-    # Save the image
-    filename = "/speed_limit.png"
-    save_path = save_folder + filename
-    cv2.imwrite(save_path, image)
-    print(f"Speed limit map saved to {save_path}")
-
-
-def generate_traffic_lights_map(scenario, iter, past_time_horizon=1., image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
+        centerline = config.world_to_image_coords(lane.baseline_path.discrete_path)
+        # Normalize speed limit to 0-255 range (assuming max speed of 30 m/s)
+        color_value = 50 if lane.speed_limit_mps is None else min(int(lane.speed_limit_mps), 255)
+        cv2.polylines(image, [centerline.reshape(-1, 1, 2)], False, color_value, 2)
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    ego_box = ego_state.car_footprint.oriented_box
+    config.save_image(image, "/speed_limit.png")
+
+
+def generate_traffic_lights_map(config: ImageConfig, time_horizon=1.):
+    step_size = int(0.2 / config.scenario.database_interval)
+    past_iter = int(time_horizon / config.scenario.database_interval)
     
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    
-    # Define traffic light colors
-    traffic_light_colors = {
-        "RED": (0,0,255),
-        "YELLOW": (255, 255, 0),
-        "GREEN": (0, 255, 0)
-    }
-
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-
-    step_size = int(0.2 / scenario.database_interval)
-
-    past_iter = int(past_time_horizon / scenario.database_interval)
-
     for i in reversed(range(0, past_iter + 1, step_size)):
-        curr_iter = iter - i
-        # Create a blank black image
-        image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
+        curr_iter = config.iter - i
+        image = config.create_image(1)
+        
+        traffic_lights = get_traffic_light_status(config.scenario, curr_iter)
+        lanes = get_lanes_around_point(config.ego_box, config.map_api)
+        
+        for lane in lanes:
+            centerline = config.world_to_image_coords(lane.baseline_path.discrete_path)
+            color = 50
+            if int(lane.id) in traffic_lights:
+                if traffic_lights.get(int(lane.id)) == "RED":
+                    color = 255
+                elif traffic_lights.get(int(lane.id)) == "YELLOW":
+                    color = 150
+            
+            cv2.polylines(image, [centerline.reshape(-1, 1, 2)], False, color, 2)
+        
+        config.save_image(image, f"/traffic_lights_-{i:03d}.png")
 
-        # plog lane
-        traffic_lights = get_traffic_light_status(scenario, curr_iter)
-        lanes = get_lane_centerlines(ego_box, map_api)
-        lane_connectors = get_lane_connectors(ego_box, map_api)
-        lanes = lanes | lane_connectors 
-
-        for lane_id, lane in lanes.items():
-            points = np.array([
-                [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-                for x, y in lane
-            ], dtype=np.int32)
-            points = points.reshape((-1,1,2))
-            color = traffic_light_colors.get(traffic_lights.get(int(lane_id), (0, 255, 0)), (0, 255, 0))
-            cv2.polylines(image, [points], isClosed=False, color=color, thickness=1)
-        image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-        # Save the image
-        filename = f"/traffic_light_-{i:03d}.png"  # 6-digit zero-padded format
-        save_path = save_folder + filename
-        cv2.imwrite(save_path, image)
-        print(f"Roadmap saved to {save_path}")
-
-
-def generate_roadmap(scenario, iter, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    """
-    Generates a roadmap centered at the ego vehicle position and saves it as an image.
+def generate_roadmap(config: ImageConfig):
+    image = config.create_image(3)
     
-    :param scenario: NuPlanScenario object
-    :param image_size: Size of the output image (image_size x image_size)
-    :param resolution: Resolution in meters per pixel
-    :param save_path: Path to save the generated image
-    """
-    # Get map API
-    map_api = scenario.map_api
-    
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
-    ego_box = ego_state.car_footprint.oriented_box
-    
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    
-    # Create a blank black image
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-    
-    # rasterize driveable area
-    roadblocks = get_roadblocks(ego_box, map_api)
-    roadblock_connectors = get_roadblock_connectors(ego_box, map_api)
-    roadblocks.extend(roadblock_connectors)
+    # Driveable area
+    roadblocks = get_roadblocks(config.ego_box, config.map_api) + get_roadblock_connectors(config.ego_box, config.map_api)
     for roadblock in roadblocks:
-        polygon = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in roadblock
-        ], dtype=np.int32)
-        roadblock = roadblock.reshape((-1, 1, 2))
-        cv2.fillPoly(
-            img=image,               # The image to draw on
-            pts=[polygon],    # List of polygons to fill
-            color=(30, 30, 30)         # Fill color
-        )
+        polygon = config.world_to_image_coords(roadblock)
+        cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=(30, 30, 30))
 
-    # Plot boudnaries
-    left_boundaries = get_lane_left_boundary(ego_box, map_api)
-    for _, left_boundary in left_boundaries.items():
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in left_boundary
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        cv2.polylines(image, [points], isClosed=False, color=(255, 255, 255), thickness=1)
-
-    right_boundaries = get_lane_right_boundary(ego_box, map_api)
-    for _, right_boundary in right_boundaries.items():
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in right_boundary
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        cv2.polylines(image, [points], isClosed=False, color=(255, 255, 255), thickness=1)
+    # Boundaries
+    for boundaries in [get_lane_left_boundary(config.ego_box, config.map_api), 
+                      get_lane_right_boundary(config.ego_box, config.map_api)]:
+        for _, boundary in boundaries.items():
+            points = config.world_to_image_coords(boundary)
+            cv2.polylines(image, [points.reshape(-1, 1, 2)], False, (255, 255, 255), 1)
     
-    # common_boundaries = merge_common_boundaries(left_boundaries, right_boundaries)
-    # for _, boundary in common_boundaries.items():
-    #     points = np.array([
-    #         [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-    #         for x, y in boundary
-    #     ], dtype=np.int32)
-    #     points = points.reshape((-1,1,2))
-    #     cv2.polylines(image, [points], isClosed=False, color=(255, 255, 0), thickness=1)
-
-    # # plog lane
-    # lanes = get_lane_centerlines(ego_box, map_api)
-    # for _, lane in lanes.items():
-    #     points = np.array([
-    #         [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-    #         for x, y in lane
-    #     ], dtype=np.int32)
-    #     # for i in range(len(points) - 1):
-    #     for i in range(0, len(points) - 11, 10):
-    #         start = points[i]
-    #         end   = points[i + 10]
-    #         # Draw an arrow from start to end
-    #         # tipLength is a fraction of the total arrow length
-    #         cv2.arrowedLine(
-    #             img=image,
-    #             pt1=(start[0], start[1]),
-    #             pt2=(end[0], end[1]),
-    #             color=(0, 255, 0),   # Green in BGR
-    #             thickness=1,
-    #             line_type=cv2.LINE_AA,
-    #             tipLength=0.5
-    #         )
+    # Map elements
+    layer_colors = {
+        SemanticMapLayer.CROSSWALK: (255, 0, 0),
+        SemanticMapLayer.INTERSECTION: (0, 255, 0),
+        SemanticMapLayer.WALKWAYS: (0, 0, 255)
+    }
     
-    # plot crosswalk
-    crosswalks = get_map_object_exterior_polygons(ego_box, map_api, SemanticMapLayer.CROSSWALK)
-    for crosswalk in crosswalks:
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in crosswalk
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        cv2.polylines(image, [points], isClosed=True, color=(255, 0, 0), thickness=1)
-    
-    # plot intersection
-    intersections = get_map_object_exterior_polygons(ego_box, map_api, SemanticMapLayer.INTERSECTION)
-    for intersection in intersections:
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in intersection
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        cv2.polylines(image, [points], isClosed=True, color=(0, 255, 0), thickness=1)
+    for layer, color in layer_colors.items():
+        polygons = get_map_object_exterior_polygons(config.ego_box, config.map_api, layer)
+        for polygon in polygons:
+            points = config.world_to_image_coords(polygon)
+            cv2.polylines(image, [points.reshape(-1, 1, 2)], True, color, 1)
 
-    # plot walkway
-    walkways = get_map_object_exterior_polygons(ego_box, map_api, SemanticMapLayer.WALKWAYS)
-    for walkway in walkways:
-        points = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in walkway
-        ], dtype=np.int32)
-        points = points.reshape((-1,1,2))
-        cv2.polylines(image, [points], isClosed=True, color=(0, 0, 255), thickness=1)
-
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-
-    # Save the image
-    save_path = save_folder + "/roadmap.png"
-    cv2.imwrite(save_path, image)
-    print(f"Roadmap saved to {save_path}")
+    config.save_image(image, "/roadmap.png")
 
 def find_best_aligned_lane(ego_state, lanes):
     """
@@ -519,37 +306,11 @@ def reason_route_intent(scenario):
 
     return lane_id_to_polygon
 
-def generate_intent_map(scenario, iter, lane_id_to_polygon, image_size=1024, resolution=0.1, save_folder="images/", angle_noise=0.):
-    # Get map API
-    map_api = scenario.map_api
+def generate_intent_map(config: ImageConfig, lane_id_to_geometry):
+    image = config.create_image(1)
     
-    # Get ego vehicle position
-    ego_state = scenario.get_ego_state_at_iteration(iter)
-    ego_x, ego_y = ego_state.car_footprint.center.x, ego_state.car_footprint.center.y
+    for lane_id, geometry in lane_id_to_geometry.items():
+        polygon = config.world_to_image_coords(geometry)
+        cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
     
-    # Define the bounding box for the image
-    half_size_meters = (image_size / 2) * resolution  # Convert pixels to meters
-    min_x, _ = ego_x - half_size_meters, ego_x + half_size_meters
-    min_y, _ = ego_y - half_size_meters, ego_y + half_size_meters
-    image = np.zeros((image_size, image_size, 3), dtype=np.uint8)
-
-    for lane_id, lane_polygon in lane_id_to_polygon.items():
-        polygon = np.array([
-            [(x - min_x) / resolution, (image_size - (y - min_y) / resolution)]
-            for x, y in lane_polygon
-        ], dtype=np.int32)
-        polygon = polygon.reshape((-1, 1, 2))
-        cv2.fillPoly(
-            img=image,               # The image to draw on
-            pts=[polygon],    # List of polygons to fill
-            color=(255, 255, 255)         # Fill color
-        )
-    
-    rotation_matrix = get_rotation_matrix(ego_state, image_size, angle_noise)
-    image = cv2.warpAffine(image, rotation_matrix, (image_size, image_size))
-
-    # Save the image
-    filename = f"/route_intent.png"  # 6-digit zero-padded format
-    save_path = save_folder + filename
-    cv2.imwrite(save_path, image)
-    print(f"route intent saved to {save_path}")
+    config.save_image(image, "/intent.png")
