@@ -15,6 +15,10 @@ class ImageConfig:
     resolution: float = 0.1
     save_folder: str = "images/"
     angle_noise: float = 0.0
+    delta_time: float = 0.2
+    future_pose_time_horizon: float = 2.0
+    past_pose_time_horizon: float = 8.0
+    past_observation_time_horizon: float = 1.0
     
     def __post_init__(self):
         # Get map API and ego state
@@ -23,6 +27,7 @@ class ImageConfig:
         self.ego_x = self.ego_state.car_footprint.center.x
         self.ego_y = self.ego_state.car_footprint.center.y
         self.ego_box = self.ego_state.car_footprint.oriented_box
+        self.step_iter = int(self.delta_time / self.scenario.database_interval)
         
         # Calculate image boundaries
         self.half_size_meters = (self.image_size / 2) * self.resolution
@@ -63,13 +68,11 @@ class ImageConfig:
 def generate_past_ego_poses(config: ImageConfig):
     image = config.create_image(1)
 
-    past_ego_states = config.scenario.get_ego_past_trajectory(config.iter, time_horizon=8.)
-    step_size = int(0.2 / config.scenario.database_interval)
-    assert(4 == step_size)
+    past_ego_states = config.scenario.get_ego_past_trajectory(config.iter, time_horizon=config.past_pose_time_horizon)
     step_t = -1
 
     for past_ego_state in past_ego_states:
-        step_t = (step_t + 1) % step_size
+        step_t = (step_t + 1) % config.step_iter
         if 0 != step_t:
             continue
         past_pose = np.array([[past_ego_state.car_footprint.center.x, past_ego_state.car_footprint.center.y]])
@@ -81,13 +84,12 @@ def generate_past_ego_poses(config: ImageConfig):
 def generate_future_ego_poses(config: ImageConfig):
     image = config.create_image(1)
 
-    step_size = int(0.2 / config.scenario.database_interval)
-    assert(4 == step_size)
-    future_ego_states = config.scenario.get_ego_future_trajectory(config.iter, time_horizon=2.)
-    step_t = 0
+    future_ego_states = config.scenario.get_ego_future_trajectory(config.iter, time_horizon=config.future_pose_time_horizon)
 
+    # Initialize step_t to 0 to skip the first step
+    step_t = 0
     for future_ego_state in future_ego_states:
-        step_t = (step_t + 1) % step_size
+        step_t = (step_t + 1) % config.step_iter
         if 0 != step_t:
             continue
         future_pose = np.array([[future_ego_state.car_footprint.center.x, future_ego_state.car_footprint.center.y]])
@@ -106,12 +108,11 @@ def generate_ego_box(config: ImageConfig):
     
     return config.rotate_image(image)
 
-def generate_past_tracked_objects_map(config: ImageConfig, past_time_horizon=1.):
-    step_size = int(0.2 / config.scenario.database_interval)
-    past_iter = int(past_time_horizon / config.scenario.database_interval)
+def generate_past_tracked_objects_map(config: ImageConfig):
+    past_iter = int(config.past_observation_time_horizon / config.scenario.database_interval)
     
     images = []
-    for i in reversed(range(0, past_iter + 1, step_size)):
+    for i in reversed(range(0, past_iter + 1, config.step_iter)):
         curr_iter = config.iter - i
         image = config.create_image(1)
 
@@ -136,13 +137,11 @@ def generate_speed_limit_map(config: ImageConfig):
     
     return config.rotate_image(image)
 
-
-def generate_traffic_lights_map(config: ImageConfig, time_horizon=1.):
-    step_size = int(0.2 / config.scenario.database_interval)
-    past_iter = int(time_horizon / config.scenario.database_interval)
+def generate_traffic_lights_map(config: ImageConfig):
+    past_iter = int(config.past_observation_time_horizon / config.scenario.database_interval)
     
     images = []
-    for i in reversed(range(0, past_iter + 1, step_size)):
+    for i in reversed(range(0, past_iter + 1, config.step_iter)):
         curr_iter = config.iter - i
         image = config.create_image(1)
         

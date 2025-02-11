@@ -1,7 +1,6 @@
 import glob
 import random
 import os
-import cv2
 import numpy as np
 from typing import Dict, List
 
@@ -82,7 +81,11 @@ for db_file in db_files:
             image_size=400,
             resolution=0.2,
             save_folder=curr_folder,
-            angle_noise=random.uniform(-25., 25.)
+            angle_noise=random.uniform(-25., 25.),
+            delta_time=0.2,
+            past_pose_time_horizon=8.,
+            future_pose_time_horizon=2.,
+            past_observation_time_horizon=1.
         )
 
         # Get all images
