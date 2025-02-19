@@ -20,7 +20,7 @@ class Config():
         self.rnn_channel_num = 10
         self.rnn_time_step = 10
         self.feature_net_out_feature_num = 256
-        self.waypoint_map_out_feature_num = 3
+        self.waypoint_map_out_feature_num = 1
 
         # mps: Apple Silicon GPU
         self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
