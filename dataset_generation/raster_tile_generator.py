@@ -88,16 +88,26 @@ def generate_future_ego_poses(config: ImageConfig):
 
     # Initialize step_t to 0 to skip the first step
     step_t = 0
+    waypoints = []
     for future_ego_state in future_ego_states:
         step_t = (step_t + 1) % config.step_iter
         if 0 != step_t:
             continue
-        future_pose = np.array([[future_ego_state.car_footprint.center.x, future_ego_state.car_footprint.center.y]])
-        polygon = config.world_to_image_coords(future_pose)
-
-        cv2.fillPoly(image, [polygon.reshape(-1, 1, 2)], color=255)
+        footprint = future_ego_state.car_footprint
+        # poision
+        curr_waypoint = np.array([[footprint.center.x, footprint.center.y]])
+        # TODO: should record the raw points without aligning to image resolution
+        curr_waypoint = config.world_to_image_coords(curr_waypoint)
+        # heading
+        curr_heading = utils.get_heading(future_ego_state, config.angle_noise)
+        curr_waypoint = np.concatenate((curr_waypoint, [[curr_heading]]), axis=1)
+        # velocity
+        velocity_vector = future_ego_state.dynamic_car_state.rear_axle_velocity_2d
+        curr_velocity = np.sqrt(velocity_vector.x**2 + velocity_vector.y**2)
+        curr_waypoint = np.concatenate((curr_waypoint, [[curr_velocity]]), axis=1)
+        waypoints.append(curr_waypoint)
     
-    return config.rotate_image(image)
+    return waypoints
 
 def generate_ego_box(config: ImageConfig):
     ego_polygon = np.array([list(corner) for corner in config.ego_box.geometry.exterior.coords])

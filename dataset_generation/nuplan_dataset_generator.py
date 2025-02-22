@@ -61,7 +61,7 @@ for db_file in db_files:
 
     # Create a folder for this db file
     db_name = os.path.splitext(os.path.basename(db_file))[0]
-    base_folder = f"images/{db_name}/"
+    base_folder = f"../images/{db_name}/"
     os.makedirs(base_folder, exist_ok=True)
 
     # ==============================
@@ -73,6 +73,7 @@ for db_file in db_files:
     for iteration in range(start_iteration, scenario.get_number_of_iterations()):
         print(f"====== new tick ======= {iteration}")
         curr_folder = os.path.join(base_folder, f"timestamp_{str(iteration).zfill(6)}/")
+        print(curr_folder)
         os.makedirs(curr_folder, exist_ok=True)
         
         config = raster_tile_generator.ImageConfig(
@@ -96,8 +97,10 @@ for db_file in db_files:
             'speed_limit': [raster_tile_generator.generate_speed_limit_map(config)],
             'past_ego': [raster_tile_generator.generate_past_ego_poses(config)],
             'traffic_lights': raster_tile_generator.generate_traffic_lights_map(config),
-            'tracked_objects': raster_tile_generator.generate_past_tracked_objects_map(config),
-            'future_ego': [raster_tile_generator.generate_future_ego_poses(config)]
+            'tracked_objects': raster_tile_generator.generate_past_tracked_objects_map(config)
+        }
+        data: Dict[str, List[np.ndarray]] = {
+            'future_waypoints': [raster_tile_generator.generate_future_ego_poses(config)]
         }
 
         # Save individual images
@@ -121,6 +124,6 @@ for db_file in db_files:
         # Stack all channels into a single multi-channel image
         stacked_image = np.dstack(channels)
         
-        # Save the stacked image with compression
-        np.savez_compressed(os.path.join(curr_folder, f"stacked_{db_name}_{iteration}.npz"), stacked_image)
-
+        # Save both stacked image with compression and waypoints into the same .npz file with different keys
+        waypoints = data['future_waypoints']
+        np.savez_compressed(os.path.join(curr_folder, f"data_{db_name}_{iteration}.npz"), images=stacked_image, future_waypoints=waypoints)

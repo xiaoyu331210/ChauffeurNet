@@ -47,8 +47,11 @@ def get_traffic_light_status(scenario, iteration):
     traffic_lights = {tl.lane_connector_id: tl.status.name for tl in traffic_light_statuses}
     return traffic_lights
 
+def get_heading(ego_state, angle_noise=0.):
+    return -ego_state.car_footprint.center.heading * 180. / 3.14 + 90. + angle_noise
+
 def get_rotation_matrix(ego_state, image_size, angle_noise=0.):
-    ego_heading = -ego_state.car_footprint.center.heading * 180. / 3.14 + 90. + angle_noise
+    ego_heading = get_heading(ego_state, angle_noise)
     rotation_center = (image_size / 2, image_size / 2)
     return cv2.getRotationMatrix2D(rotation_center, ego_heading, 1.0)
 
