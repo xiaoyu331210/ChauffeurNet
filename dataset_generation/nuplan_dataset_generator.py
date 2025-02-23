@@ -1,3 +1,4 @@
+import cv2
 import glob
 import random
 import os
@@ -79,7 +80,9 @@ for db_file in db_files:
         config = raster_tile_generator.ImageConfig(
             scenario=scenario,
             iter=iteration,
-            image_size=400,
+            image_size=800,
+            save_image_size = 400,
+            vertical_shift_pixel = 50,
             resolution=0.2,
             save_folder=curr_folder,
             angle_noise=random.uniform(-25., 25.),
@@ -90,6 +93,11 @@ for db_file in db_files:
         )
 
         # Get all images
+        waypoints, waypoint_images = raster_tile_generator.generate_future_ego_poses(config)
+        data: Dict[str, List[np.ndarray]] = {
+            'future_waypoints': [waypoints],
+            'future_waypoint_images': waypoint_images
+        }
         images: Dict[str, List[np.ndarray]] = {
             'ego_box': [raster_tile_generator.generate_ego_box(config)],
             'roadmap': [raster_tile_generator.generate_roadmap(config)],
@@ -99,12 +107,33 @@ for db_file in db_files:
             'traffic_lights': raster_tile_generator.generate_traffic_lights_map(config),
             'tracked_objects': raster_tile_generator.generate_past_tracked_objects_map(config)
         }
-        data: Dict[str, List[np.ndarray]] = {
-            'future_waypoints': [raster_tile_generator.generate_future_ego_poses(config)]
-        }
+
+        # for each image, shift it vertically by vertical_shift_pixel and crop it to save_image_size
+        # the cropped image should be centered by the original image
+        for name, img_list in images.items():
+            for i, img in enumerate(img_list):
+                images[name][i] = utils.crop_and_shift_image(img, config.vertical_shift_pixel, config.save_image_size)
+        for name, img_list in data.items():
+            if name != 'future_waypoint_images':
+                continue
+            for i, img in enumerate(img_list):
+                data[name][i] = utils.crop_and_shift_image(img, config.vertical_shift_pixel, config.save_image_size)
+
+        # the future waypoints are saved in the original image dimension as well, so we need to shift them accordingly
+        for i, waypoints in enumerate(data['future_waypoints']):
+            pixel_shift = (config.image_size - config.save_image_size) / 2
+            for j, waypoint in enumerate(waypoints):
+                waypoint[0][0] = waypoint[0][0] - pixel_shift
+                waypoint[0][1] = waypoint[0][1] - pixel_shift + config.vertical_shift_pixel
 
         # Save individual images
         for name, img_list in images.items():
+            for i, img in enumerate(img_list):
+                config.save_image(img, f"{name}_{i:03d}.png")
+        # Save individual data
+        for name, img_list in data.items():
+            if name != 'future_waypoint_images':
+                continue
             for i, img in enumerate(img_list):
                 config.save_image(img, f"{name}_{i:03d}.png")
 
@@ -125,5 +154,4 @@ for db_file in db_files:
         stacked_image = np.dstack(channels)
         
         # Save both stacked image with compression and waypoints into the same .npz file with different keys
-        waypoints = data['future_waypoints']
-        np.savez_compressed(os.path.join(curr_folder, f"data_{db_name}_{iteration}.npz"), images=stacked_image, future_waypoints=waypoints)
+        np.savez_compressed(os.path.join(curr_folder, f"data_{db_name}_{iteration}.npz"), images=stacked_image, future_waypoints=data["future_waypoint_images"])

@@ -12,6 +12,8 @@ class ImageConfig:
     scenario: any  # NuPlanScenario
     iter: int
     image_size: int = 1024
+    save_image_size: int = 400
+    vertical_shift_pixel: int = 0
     resolution: float = 0.1
     save_folder: str = "images/"
     angle_noise: float = 0.0
@@ -37,8 +39,8 @@ class ImageConfig:
         # Get rotation matrix
         self.rotation_matrix = utils.get_rotation_matrix(self.ego_state, self.image_size, self.angle_noise)
     
-    def create_image(self, channel_num):
-        return np.zeros((self.image_size, self.image_size, channel_num), dtype=np.uint8)
+    def create_image(self, channel_num, dtype=np.uint8):
+        return np.zeros((self.image_size, self.image_size, channel_num), dtype=dtype)
     
     def world_to_image_coords(self, points) -> np.ndarray:
         """Convert world coordinates to image coordinates"""
@@ -82,32 +84,41 @@ def generate_past_ego_poses(config: ImageConfig):
     return config.rotate_image(image)
 
 def generate_future_ego_poses(config: ImageConfig):
-    image = config.create_image(1)
-
     future_ego_states = config.scenario.get_ego_future_trajectory(config.iter, time_horizon=config.future_pose_time_horizon)
 
-    # Initialize step_t to 0 to skip the first step
     step_t = 0
     waypoints = []
+    waypoint_images = []
     for future_ego_state in future_ego_states:
+        image = config.create_image(1, dtype=np.float32)
         step_t = (step_t + 1) % config.step_iter
         if 0 != step_t:
             continue
         footprint = future_ego_state.car_footprint
-        # poision
+        # position
         curr_waypoint = np.array([[footprint.center.x, footprint.center.y]])
         # TODO: should record the raw points without aligning to image resolution
         curr_waypoint = config.world_to_image_coords(curr_waypoint)
         # heading
         curr_heading = utils.get_heading(future_ego_state, config.angle_noise)
-        curr_waypoint = np.concatenate((curr_waypoint, [[curr_heading]]), axis=1)
+        curr_waypoint = np.concatenate((curr_waypoint, [[curr_heading]]), axis=1)  # shape: (1, 3)
         # velocity
         velocity_vector = future_ego_state.dynamic_car_state.rear_axle_velocity_2d
         curr_velocity = np.sqrt(velocity_vector.x**2 + velocity_vector.y**2)
-        curr_waypoint = np.concatenate((curr_waypoint, [[curr_velocity]]), axis=1)
+        curr_waypoint = np.concatenate((curr_waypoint, [[curr_velocity]]), axis=1)  # shape: (1, 4)
+
+        # Apply rotation only to position coordinates
+        position = curr_waypoint[0, :2].reshape(-1, 1) - config.image_size / 2  # Extract position (x,y)
+        rotated_position = np.dot(config.rotation_matrix[:, :2], position).flatten() + config.image_size / 2
+
+        # Combine rotated position with heading and velocity
+        curr_waypoint[0, :2] = rotated_position
         waypoints.append(curr_waypoint)
-    
-    return waypoints
+
+        # add a gaussian distribution to the image
+        utils.add_gaussian_distribution(image, curr_waypoint[0][1], curr_waypoint[0][0])
+        waypoint_images.append(image)
+    return waypoints, waypoint_images
 
 def generate_ego_box(config: ImageConfig):
     ego_polygon = np.array([list(corner) for corner in config.ego_box.geometry.exterior.coords])

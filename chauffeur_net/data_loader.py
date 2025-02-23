@@ -30,28 +30,22 @@ class ChauffeurNetDataset(Dataset):
         # the second subfolder is the timestamp folder
         for scenario_name in os.listdir(self.data_folder):
             scenario_folder = os.path.join(self.data_folder, scenario_name)
+            # Skip if not a directory or is hidden file
+            if not os.path.isdir(scenario_folder) or scenario_name.startswith('.'):
+                continue
             for timestamp in os.listdir(scenario_folder):
                 timestamp_folder = os.path.join(scenario_folder, timestamp)
+                # Skip if not a directory or is hidden file
+                if not os.path.isdir(timestamp_folder) or timestamp.startswith('.'):
+                    continue
                 for file in os.listdir(timestamp_folder):
                     if not file.endswith(".npz"):
                         continue
                     data = np.load(os.path.join(timestamp_folder, file))
                     self.images.append(data["images"])
                     # convert the future waypoints to a image
-                    image_size = data["images"].shape[1]
-                    waypoints = data["future_waypoints"]
-                    waypoint_images = []    
-                    for i in range(waypoints.shape[1]):
-                        waypoint = waypoints[0, i, 0, :]
-                        # a 2D guassian distribution will be added around the waypoint
-                        # the variance of the gaussian distribution is 0.5
-                        # the mean of the gaussian distribution is the waypoint
-                        image = np.zeros((image_size, image_size))
-                        # add a 2D guassian distribution around the waypoint
-                        x = waypoint[0]
-                        y = waypoint[1]
-                        waypoint_images.append(self.add_gaussian_distribution(image, x, y))
-                    self.future_waypoints.append(waypoint_images)
+                    future_waypoint_images = data["future_waypoints"]
+                    self.future_waypoints.append(future_waypoint_images)
 
     def __len__(self):
         return len(self.images)
@@ -59,34 +53,16 @@ class ChauffeurNetDataset(Dataset):
     def __getitem__(self, idx):
         return self.images[idx], self.future_waypoints[idx]
 
-    def add_gaussian_distribution(self, image, x, y, radius=20):
-        """Add a 2D Gaussian distribution to the image at the specified (x, y) location within a given radius."""
-        size = image.shape[0]
-        
-        # Define the bounds of the region to update
-        x_min = max(0, int(x) - radius)
-        x_max = min(size, int(x) + radius + 1)
-        y_min = max(0, int(y) - radius)
-        y_max = min(size, int(y) + radius + 1)
-        
-        # Create a grid of (i, j) coordinates within the bounds
-        x_indices, y_indices = np.meshgrid(np.arange(x_min, x_max), np.arange(y_min, y_max), indexing='ij')
-        
-        # Calculate the Gaussian values for the specified region
-        variance = 0.333 * radius
-        gaussian_values = np.exp(-((x_indices - x) ** 2 + (y_indices - y) ** 2) / (2 * variance ** 2))
-        
-        # Add the Gaussian values to the image within the specified region
-        image[x_min:x_max, y_min:y_max] += gaussian_values
-        
-        return image
-
 # Test dataset
 dataset = ChauffeurNetDataset("../images/")
-print(len(dataset))
-print(dataset[0][0].shape)
-print(dataset[0][1][0].shape)
 
 # plot the first waypoint image
-plt.imshow(dataset[0][1][0])
-plt.show()
+# overlap all waypoints images on the first image, each pixel take the maximum probability
+for _ in range(5):
+    random_idx = np.random.randint(0, len(dataset))
+    data, labels = dataset[random_idx]
+    image = data[:, :, 0]
+    for i in range(len(labels)):
+        image = np.maximum(image, labels[i][:, :, 0] * 255.)
+    plt.imshow(image)
+    plt.show()

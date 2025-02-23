@@ -3,7 +3,7 @@ import numpy as np
 from nuplan.common.actor_state.state_representation import Point2D
 from nuplan.common.maps.maps_datatypes import SemanticMapLayer
 
-def get_lanes_around_point(ego_box, map_api, radius=50.0):
+def get_lanes_around_point(ego_box, map_api, radius=70.0):
     """Get all lanes within a radius of the ego vehicle."""
     ego_point = Point2D(ego_box.center.x, ego_box.center.y)
     
@@ -14,7 +14,7 @@ def get_lanes_around_point(ego_box, map_api, radius=50.0):
     return list(lanes) + list(lane_connectors)
 
 # Function to extract proximal map objects
-def get_proximal_map_objects(layer, map_api, radius=50.0, ego_box=None):
+def get_proximal_map_objects(layer, map_api, radius=70.0, ego_box=None):
     return map_api.get_proximal_map_objects(Point2D(ego_box.center.x, ego_box.center.y), radius, [layer])[layer]
 
 def get_lane_left_boundary(ego_box, map_api):
@@ -112,3 +112,35 @@ def reason_route_intent(scenario):
             lane_id_to_polygon[best_lane.id] = best_lane.polygon.exterior.coords
 
     return lane_id_to_polygon
+
+def add_gaussian_distribution(image, x, y, radius=20):
+    """Add a 2D Gaussian distribution to the image at the specified (x, y) location within a given radius."""
+    size = image.shape[0]
+    
+    # Define the bounds of the region to update
+    x_min = max(0, int(x) - radius)
+    x_max = min(size, int(x) + radius + 1)
+    y_min = max(0, int(y) - radius)
+    y_max = min(size, int(y) + radius + 1)
+    
+    # Create a grid of (i, j) coordinates within the bounds
+    x_indices, y_indices = np.meshgrid(np.arange(x_min, x_max), np.arange(y_min, y_max), indexing='ij')
+    
+    # Calculate the Gaussian values for the specified region
+    variance = 0.333 * radius
+    gaussian_values = np.exp(-((x_indices - x) ** 2 + (y_indices - y) ** 2) / (2 * variance ** 2))
+    gaussian_values = np.expand_dims(gaussian_values, axis=-1)
+    
+    # Add the Gaussian values to the image within the specified region
+    image[x_min:x_max, y_min:y_max] += gaussian_values
+    
+    return image
+
+def crop_and_shift_image(image, vertical_shift_pixel, save_image_size):
+    # shift the image vertically by vertical_shift_pixel
+    image = np.roll(image, vertical_shift_pixel, axis=0)
+    # crop the image to save_image_size for both height and width
+    width = [(image.shape[1] - save_image_size) / 2, (image.shape[1] + save_image_size) / 2]
+    height = [(image.shape[0] - save_image_size) / 2 - vertical_shift_pixel, (image.shape[0] + save_image_size) / 2 - vertical_shift_pixel]
+    image = image[int(height[0]):int(height[1]), int(width[0]):int(width[1])]
+    return image
